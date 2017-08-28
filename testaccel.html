@@ -44,16 +44,29 @@
 
 	<script type="text/javascript">
 
+	var fps = 50, mduration = 6000, n = 1;
+
+	var accelData = [], accelTimes = [], startTime = new Date();
+	var c,t;
+	var heartbeats = 0, bpm = 0, averageBpm = 0;
+
+	$(document).ready(function() {
+		initchart();
+		if( !(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) )
+			alert("This does not look like a mobile device - please load this page on a smartphone or tablet!");
+	});
+
+	/* utility functions */
 
 	function standardDeviation(values){
 	  var avg = average(values);
-  
+
 	  var squareDiffs = values.map(function(value){
 	  	var diff = value - avg;
 	  	var sqrDiff = diff * diff;
 	  	return sqrDiff;
 	  });
-  
+
 	  var avgSquareDiff = average(squareDiffs);
 
 	  var stdDev = Math.sqrt(avgSquareDiff);
@@ -69,25 +82,42 @@
 	  return avg;
 	}
 
-
-	var accelData = [], accelTimes = [], startTime = new Date();
-	var c,t;
-	var fps = 50, mduration = 6000, n = 1;
-	var heartbeats = 0, bpm = 0, averageBpm = 0;
-
-	$(document).ready(function() {
-		initchart();
-		if( !(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) )
-			alert("This does not look like a mobile device - please load this page on a smartphone or tablet!");
-	});
-
-	if(window.DeviceMotionEvent){
-		window.addEventListener("devicemotion", motion, false);
-	}else{
-		console.log("DeviceMotionEvent is not supported");
+	function smooth() {
+		// smooth on two time scales
+		var heartSignal = AudioProcessor.savitzkyGolay(accelData, Math.round(fps/2)*2+1, 3);
+		heartSignal = AudioProcessor.savitzkyGolay(heartSignal, Math.round(fps/4)*2+1, 3);
+		// subtract slow, large acceleration due to breathing
+		var breathSignal = AudioProcessor.savitzkyGolay(heartSignal, Math.round(fps)*2+1, 3);
+		heartSignal = numeric.sub(heartSignal, breathSignal);
+		// smooth on two time scales
+		heartSignal = AudioProcessor.savitzkyGolay(heartSignal, Math.round(fps/4)*2+1, 3);
+		heartSignal = AudioProcessor.savitzkyGolay(heartSignal, Math.round(fps/8)*2+1, 3);
+		return heartSignal;
 	}
 
-	function motion(event){
+	function countHeartBeats(heartSignal) {
+		var currentMaximum = 0;
+		var beats = 0;
+		var mean = average(heartSignal);
+		var sthreshold = 0.2*standardDeviation(heartSignal);
+		for (var i = 0; i < heartSignal.length; i++) {
+			if (heartSignal[i] > mean+sthreshold) {
+				heartSignal[i] = mean+sthreshold;
+				if (!currentMaximum) {
+					currentMaximum = 1;
+					beats += 1;
+				}
+			}
+			else {
+				currentMaximum = 0;
+			}
+		}
+		return beats;
+	}
+
+	/* main motion processing & heart rate calculation */
+
+	function calculateHeartRate(event){
 	  accelData.push(event.accelerationIncludingGravity.y);
 	  accelTimes.push(new Date() - startTime);
 	  if (new Date() - startTime > mduration) {
@@ -95,42 +125,21 @@
 		if (averageBpm != 0)
 			$("#output").html("<h1 style='font-size:36pt'>"+(averageBpm==50?"<50":(averageBpm==140?">140":Math.round(averageBpm)))+" beats/minute</h1>current bpm: "+(bpm==50?"<50":(bpm==140?">140":bpm))+"; heartbeats: "+heartbeats+" in "+(mduration/1000)+" seconds (sensor data: "+Math.round(fps)+"Hz)"); // + " " + (accelData.length * DeviceMotionEvent.interval) + " " + new Date().toString() + " " + event.accelerationIncludingGravity.x + ", " + event.accelerationIncludingGravity.y + ", " + event.accelerationIncludingGravity.z);
 		else if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent))
-			$("#output").html('<img src="press.png"><br/>Waiting for accelerometer to pick up your heartbeat... Don´t move, keep the phone against your chest, and please be patient.<h4><u>Firmly</u> press the bottom of your smartphone against your chest, and wait <u>without moving</u></h4>');
+			$("#output").html('<img src="press.png"><br/>Waiting for accelerometer to pick up your heartbeat... <b>Don´t move</b>, keep the phone against your chest, and please be patient.<h4><u>Firmly</u> press the bottom of your smartphone against your chest, and wait <u>without moving</u></h4>');
 		else
 			$("#output").html("<h1>This is not a mobile device, or no accelerometers detected. Please load this page on a smartphone or tablet instead!</h1>");
 
 		// smoothing (with savitzky golay filter)
-		var heart = AudioProcessor.savitzkyGolay(accelData, Math.round(fps/2)*2+1, 3);
-		heart = AudioProcessor.savitzkyGolay(heart, Math.round(fps/4)*2+1, 3);
-		// subtract slow, large acceleration due to breathing
-		var breath = AudioProcessor.savitzkyGolay(heart, Math.round(fps)*2+1, 3);
-		heart = numeric.sub(heart, breath);
-		heart = AudioProcessor.savitzkyGolay(heart, Math.round(fps/4)*2+1, 3);
-		heart = AudioProcessor.savitzkyGolay(heart, Math.round(fps/8)*2+1, 3);
+		var heartSignal = smooth(accelData);
 
 		// plot
-	  	updatechart(heart, "graph");
+	  	updatechart(heartSignal, "graph");
 
 		//thresholdcounting
-		var currentMaximum = 0;
-		heartbeats = 0;
-		var mean = average(heart);
-		var sthreshold = 0.2*standardDeviation(heart);
-		for (var i = 0; i < heart.length; i++) {
-			if (heart[i] > mean+sthreshold) {
-				heart[i] = mean+sthreshold;
-				if (!currentMaximum) {
-					currentMaximum = 1;
-					heartbeats += 1;
-				}
-			}
-			else {
-				currentMaximum = 0;
-			}
-		}
+		heartbeats = countHeartBeats(heartSignal);
 
 		//diffjs method - count extrema - works less well
-		//A = extrema(heart, "0.02");
+		//A = extrema(heartSignal, "0.02");
 		//heartbeats = 1+(A.minlist.length + A.maxlist.length)/2.0;
 
 		// calculate beats per minute (use weighted rolling average)
@@ -151,6 +160,8 @@
 	  	startTime = new Date();
 	  }
 	}
+
+	/* plotting functions */
 
 	var m = [1, 1, 1, 1]; // margins
 	var graphw = 850 - m[1] - m[3]; // graph width
@@ -191,6 +202,14 @@
 
 		var graph = d3.select("#"+graphid).transition();
 		graph.select(".line").duration(data.length).attr("d", line(data))
+	}
+
+	/* accelerometry / motion event handler */
+
+	if(window.DeviceMotionEvent){
+			window.addEventListener("devicemotion", calculateHeartRate, false);
+	}else{
+			alert("DeviceMotionEvent is not supported");
 	}
 	</script>
 
